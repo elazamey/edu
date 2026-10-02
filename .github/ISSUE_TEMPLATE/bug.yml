@@ -1,0 +1,23 @@
+name: بلاغ عن خلل
+about: أبلغ عن سلوك لا يعمل كما هو متوقع
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: وصف الخلل
+      description: ماذا حدث؟ وما المتوقع حدوثه؟
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: خطوات إعادة الإنتاج
+      description: اذكر الخطوات والبيئة المستخدمة إن أمكن.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: سجلات أو لقطات شاشة
+      description: احذف الأسرار والبيانات الشخصية قبل النشر.

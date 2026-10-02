@@ -1,0 +1,16 @@
+# Import this Blueprint in the Render dashboard after merging it into main.
+services:
+  - type: web
+    name: nexus-agent
+    runtime: node
+    plan: free
+    branch: main
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+# Render supplies PORT automatically. Configure optional integration credentials
+# in the Render dashboard only after the corresponding features are implemented.

@@ -13,11 +13,13 @@ npm start
 
 افتح `http://localhost:3000`، أو اختبر حالة الخدمة على `http://localhost:3000/api/health`. لتغيير المنفذ، اضبط المتغير `PORT`.
 
+يستخدم الخادم حاليًا `helmet`، وتحديد حجم JSON إلى `100kb`، ومحدد معدل للطلبات على مسارات `/api`. لم تُضف المصادقة وقاعدة البيانات بعد، لذلك أزيلت اعتماديات JWT وbcrypt وSupabase وMongoDB إلى حين تنفيذها فعليًا.
+
 ## الفحوصات
 
 ```bash
 python3 scripts/check_repo.py
-npx playwright install chromium
+npm run test:e2e:install
 npm run test:e2e
 ```
 

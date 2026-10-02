@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nexus Agent Platform</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 48rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.6; }
+    h1 { margin-bottom: .25rem; }
+    .status { padding: 1rem; border: 1px solid #ccc; border-radius: .5rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Nexus Agent Platform</h1>
+    <p>Starter application. Authentication and agent features are not implemented yet.</p>
+    <p class="status" id="status" role="status">Checking service status…</p>
+  </main>
+  <script>
+    fetch('/api/health')
+      .then(response => { if (!response.ok) throw new Error('Service unavailable'); return response.json(); })
+      .then(data => { document.querySelector('#status').textContent = `Service: ${data.status}`; })
+      .catch(() => { document.querySelector('#status').textContent = 'Service unavailable'; });
+  </script>
+</body>
+</html>

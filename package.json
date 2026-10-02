@@ -6,9 +6,13 @@
   "main": "server/index.js",
   "type": "module",
   "scripts": {
-    "start": "node server/index.js",
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.js\"",
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install chromium"
+  },
+  "engines": {
+    "node": ">=22.13"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

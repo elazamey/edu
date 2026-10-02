@@ -1,20 +1,138 @@
 <!doctype html>
-<html lang="en">
+<html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nexus Agent Platform</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 48rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.6; }
-    h1 { margin-bottom: .25rem; }
-    .status { padding: 1rem; border: 1px solid #ccc; border-radius: .5rem; }
-  </style>
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <main>
-    <h1>Nexus Agent Platform</h1>
-    <p>Starter application. Authentication and agent features are not implemented yet.</p>
-    <p class="status" id="status" role="status">Checking service status…</p>
+  <main class="container">
+    <header class="hero">
+      <div>
+        <h1>Nexus Agent Platform</h1>
+        <p class="hero-subtitle">منصة إدارة الوكلاء الأذكياء والمهام والجلسات مع طبقة تخزين بيانات مستدامة.</p>
+      </div>
+      <div class="telemetry-badges">
+        <p class="status" id="status" role="status">Checking service status…</p>
+        <p class="db-badge" id="db-status">Database: checking…</p>
+      </div>
+    </header>
+
+    <div class="grid-layout">
+      <!-- Authentication & Session Section -->
+      <section class="card" id="auth-section" aria-labelledby="auth-heading">
+        <h2 id="auth-heading">المصادقة وإدارة الجلسة</h2>
+
+        <div id="auth-logged-out">
+          <div class="form-group">
+            <label for="auth-username">اسم المستخدم (Username)</label>
+            <input id="auth-username" name="username" type="text" placeholder="مثال: operator_1" autocomplete="username">
+          </div>
+          <div class="form-group">
+            <label for="auth-displayname">الاسم الظاهر (اختياري للتسجيل)</label>
+            <input id="auth-displayname" name="displayName" type="text" placeholder="مثال: مهندس المنصة">
+          </div>
+          <div class="form-group">
+            <label for="auth-password">كلمة المرور (Password)</label>
+            <input id="auth-password" name="password" type="password" placeholder="6 أحرف على الأقل" autocomplete="current-password">
+          </div>
+          <div class="btn-row">
+            <button type="button" id="login-btn">تسجيل الدخول</button>
+            <button type="button" id="register-btn" class="secondary">إنشاء حساب</button>
+            <button type="button" id="github-demo-btn" class="secondary">دخول سريع (GitHub Demo)</button>
+          </div>
+        </div>
+
+        <div id="auth-logged-in" class="hidden">
+          <p id="current-user-info" class="notice success"></p>
+          <div class="btn-row">
+            <button type="button" id="logout-btn" class="danger">تسجيل الخروج</button>
+          </div>
+        </div>
+
+        <p id="auth-feedback" class="notice hidden"></p>
+      </section>
+
+      <!-- Agents Management Section -->
+      <section class="card" id="agents-section" aria-labelledby="agents-heading">
+        <h2 id="agents-heading">وكلاء Nexus الأذكياء</h2>
+        <form id="create-agent-form">
+          <div class="form-group">
+            <label for="agent-name">اسم الوكيل</label>
+            <input id="agent-name" name="name" type="text" placeholder="مثال: Nexus Optimizer" required>
+          </div>
+          <div class="form-group">
+            <label for="agent-role">الدور الوظيفي</label>
+            <input id="agent-role" name="role" type="text" placeholder="مثال: محلل أداء الأنظمة" required>
+          </div>
+          <div class="form-group">
+            <label for="agent-specialty">التخصص والمهارات</label>
+            <input id="agent-specialty" name="specialty" type="text" placeholder="مثال: تحسين زمن الاستجابة واستهلاك الموارد" required>
+          </div>
+          <button type="submit" id="add-agent-btn">إضافة وكيل جديد</button>
+        </form>
+        <div id="agents-list" class="item-list" aria-live="polite"></div>
+      </section>
+    </div>
+
+    <div class="grid-layout">
+      <!-- Tasks Management Section -->
+      <section class="card" id="tasks-section" aria-labelledby="tasks-heading">
+        <h2 id="tasks-heading">إدارة وتشغيل المهام</h2>
+        <form id="create-task-form">
+          <div class="form-group">
+            <label for="task-title">عنوان المهمة</label>
+            <input id="task-title" name="title" type="text" placeholder="مثال: تدقيق مسارات المصادقة" required>
+          </div>
+          <div class="form-group">
+            <label for="task-desc">وصف المهمة</label>
+            <textarea id="task-desc" name="description" placeholder="تفاصيل إضافية للمهمة..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="task-agent">الوكيل المسؤول</label>
+            <select id="task-agent" name="agentId" required></select>
+          </div>
+          <div class="form-group">
+            <label for="task-priority">الأولوية</label>
+            <select id="task-priority" name="priority">
+              <option value="high">عالية (High)</option>
+              <option value="medium" selected>متوسطة (Medium)</option>
+              <option value="low">منخفضة (Low)</option>
+            </select>
+          </div>
+          <button type="submit" id="add-task-btn">إنشاء مهمة</button>
+        </form>
+
+        <div class="form-group" style="margin-top: 1rem;">
+          <label for="task-filter-status">تصفية حسب الحالة</label>
+          <select id="task-filter-status">
+            <option value="">الكل</option>
+            <option value="pending">قيد الانتظار (Pending)</option>
+            <option value="completed">مكتملة (Completed)</option>
+          </select>
+        </div>
+
+        <div id="tasks-list" class="item-list" aria-live="polite"></div>
+      </section>
+
+      <!-- Interactive Agent Chat Console -->
+      <section class="card" id="chat-section" aria-labelledby="chat-heading">
+        <h2 id="chat-heading">وحدة المحادثة التفاعلية مع الوكيل</h2>
+        <div class="form-group">
+          <label for="chat-agent">اختر الوكيل للمحادثة</label>
+          <select id="chat-agent"></select>
+        </div>
+        <div id="chat-messages" class="chat-box" aria-live="polite"></div>
+        <form id="chat-form">
+          <div class="form-group">
+            <label for="chat-input">رسالتك للوكيل</label>
+            <input id="chat-input" type="text" placeholder="اكتب سؤالك أو توجيهك للوكيل..." required>
+          </div>
+          <button type="submit" id="chat-send-btn">إرسال للوكيل</button>
+        </form>
+      </section>
+    </div>
   </main>
   <script src="/app.js" defer></script>
 </body>

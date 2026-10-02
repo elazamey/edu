@@ -13,4 +13,5 @@ node_modules/
 playwright-report/
 test-results/
 coverage/
+data/
 !.env.production.example

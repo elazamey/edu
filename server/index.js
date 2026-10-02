@@ -4,11 +4,13 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { registerAuthRoutes } from './auth.js';
+import { config } from './config.js';
+import { logger } from './logger.js';
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const publicDirectory = path.join(__dirname, '..', 'public');
@@ -31,14 +33,19 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', service: 'Nexus Agent Platform' });
 });
 
-// Placeholder only: no OAuth flow or user authentication is implemented yet.
-app.get('/api/auth/github', (req, res) => {
-  res.json({ message: 'GitHub Auth endpoint active' });
+const authRouter = express.Router();
+registerAuthRoutes(authRouter);
+app.use('/api/auth', authRouter);
+
+app.use((error, req, res, next) => {
+  logger.error('Unhandled request error', { method: req.method, path: req.path, error: error.message });
+  if (res.headersSent) return next(error);
+  res.status(error.statusCode || 500).json({ error: 'Internal server error' });
 });
 
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Nexus server running on port ${PORT}`);
+  app.listen(config.port, '0.0.0.0', () => {
+    logger.info('Nexus server started', { port: config.port, environment: process.env.NODE_ENV || 'development' });
   });
 }
 

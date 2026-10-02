@@ -13,7 +13,11 @@ npm start
 
 افتح `http://localhost:3000`، أو اختبر حالة الخدمة على `http://localhost:3000/api/health`. لتغيير المنفذ، اضبط المتغير `PORT`.
 
-يستخدم الخادم حاليًا `helmet`، وتحديد حجم JSON إلى `100kb`، ومحدد معدل للطلبات على مسارات `/api`. لم تُضف المصادقة وقاعدة البيانات بعد، لذلك أزيلت اعتماديات JWT وbcrypt وSupabase وMongoDB إلى حين تنفيذها فعليًا.
+يستخدم الخادم حاليًا `helmet`، وتحديد حجم JSON إلى `100kb`، ومحدد معدل للطلبات على مسارات `/api`. أضيفت بنية GitHub OAuth وSupabase اختيارية؛ تعمل الخدمة الأساسية بدون أسرار، بينما تعيد مسارات المصادقة `503` حتى تُضبط متغيرات البيئة المطلوبة.
+
+## المصادقة وقاعدة البيانات
+
+يعتمد Stage 2 على GitHub OAuth وجلسات opaque tokens محفوظة كـ hashes داخل HttpOnly cookies. طبّق `supabase/schema.sql` على مشروع Supabase، ثم اضبط القيم الموجودة في `.env.production.example` (خصوصًا `SUPABASE_SERVICE_ROLE_KEY` الذي يجب أن يبقى على الخادم فقط). سجّل `GITHUB_CALLBACK_URL` نفسه في تطبيق GitHub OAuth. لا تُستخدم JWT في هذا التدفق.
 
 ## الفحوصات
 

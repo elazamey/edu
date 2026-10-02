@@ -11,6 +11,8 @@
     "test:e2e:install": "playwright install chromium"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
+    "cookie": "^2.0.1",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-rate-limit": "^8.7.0",

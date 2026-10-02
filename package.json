@@ -15,7 +15,7 @@
     "jsonwebtoken": "^9.0.2",
     "bcryptjs": "^2.4.3",
     "@supabase/supabase-js": "^2.43.0",
-    "mongodb": "^6.6.0"
+    "mongodb": "^7.7.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.44.0"

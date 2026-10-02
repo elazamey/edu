@@ -13,4 +13,9 @@ node_modules/
 playwright-report/
 test-results/
 coverage/
+# Local SQLite database files
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 !.env.production.example

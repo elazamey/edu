@@ -34,20 +34,15 @@ const DEFAULT_AGENTS = [
   },
 ];
 
-const DEFAULT_TASKS = [
-  {
-    id: 'task-welcome-1',
-    title: 'فحص جاهزية منصة Nexus',
-    description: 'التحقق من حالة الخادم وقاعدة البيانات ومسارات الوكلاء.',
-    agentId: 'agent-guardian',
-    priority: 'high',
-    status: 'completed',
-    output: 'تم التحقق من استقرار الخادم، تفعيل طبقة التخزين، وجاهزية الوكلاء الثلاثة للعمل.',
-    createdBy: 'system',
-    createdAt: '2026-10-02T00:00:00.000Z',
-    updatedAt: '2026-10-02T00:00:00.000Z',
-  },
-];
+export class StoreCorruptionError extends Error {
+  constructor(message, { filePath, quarantinePath, cause } = {}) {
+    super(message);
+    this.name = 'StoreCorruptionError';
+    this.filePath = filePath;
+    this.quarantinePath = quarantinePath;
+    this.cause = cause;
+  }
+}
 
 function createInitialState() {
   return {
@@ -60,7 +55,7 @@ function createInitialState() {
     users: [],
     sessions: [],
     agents: structuredClone(DEFAULT_AGENTS),
-    tasks: structuredClone(DEFAULT_TASKS),
+    tasks: [],
     messages: [],
   };
 }
@@ -80,30 +75,42 @@ export class NexusStore {
     fs.mkdirSync(dir, { recursive: true });
 
     if (fs.existsSync(this.filePath)) {
+      let parsed;
       try {
         const raw = fs.readFileSync(this.filePath, 'utf8');
-        const parsed = JSON.parse(raw);
-        this.state = {
-          meta: parsed.meta || {
-            version: 1,
-            engine: 'json-file',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-          users: Array.isArray(parsed.users) ? parsed.users : [],
-          sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
-          agents: Array.isArray(parsed.agents) && parsed.agents.length > 0
-            ? parsed.agents
-            : structuredClone(DEFAULT_AGENTS),
-          tasks: Array.isArray(parsed.tasks) ? parsed.tasks : structuredClone(DEFAULT_TASKS),
-          messages: Array.isArray(parsed.messages) ? parsed.messages : [],
-        };
-        return;
-      } catch {
-        this.state = createInitialState();
-        this.persist();
-        return;
+        parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('Root JSON value must be an object');
+        }
+      } catch (err) {
+        const quarantinePath = `${this.filePath}.corrupt.${Date.now()}.bak`;
+        try {
+          fs.copyFileSync(this.filePath, quarantinePath);
+        } catch {
+          // Best-effort quarantine copy; still fail-closed below.
+        }
+        throw new StoreCorruptionError(
+          `Database file is corrupted and cannot be parsed (${this.filePath}). Quarantined copy saved to ${quarantinePath}. Refusing to overwrite existing data.`,
+          { filePath: this.filePath, quarantinePath, cause: err },
+        );
       }
+
+      this.state = {
+        meta: parsed.meta || {
+          version: 1,
+          engine: 'json-file',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        users: Array.isArray(parsed.users) ? parsed.users : [],
+        sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+        agents: Array.isArray(parsed.agents) && parsed.agents.length > 0
+          ? parsed.agents
+          : structuredClone(DEFAULT_AGENTS),
+        tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
+        messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+      };
+      return;
     }
 
     this.state = createInitialState();
@@ -114,9 +121,22 @@ export class NexusStore {
     this.state.meta.updatedAt = new Date().toISOString();
     const dir = path.dirname(this.filePath);
     fs.mkdirSync(dir, { recursive: true });
+    if (fs.existsSync(this.filePath)) {
+      try {
+        fs.copyFileSync(this.filePath, `${this.filePath}.bak`);
+      } catch {
+        // Ignore backup copy errors if file was concurrently moved
+      }
+    }
     const tempFile = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
     fs.writeFileSync(tempFile, `${JSON.stringify(this.state, null, 2)}\n`, 'utf8');
     fs.renameSync(tempFile, this.filePath);
+  }
+
+  reloadFromDisk() {
+    this.state = null;
+    this.ensureLoaded();
+    return this.getStatus();
   }
 
   reset() {
@@ -237,7 +257,7 @@ export class NexusStore {
     return this.state.agents.find(a => a.id === id) || null;
   }
 
-  createAgent({ name, role, specialty }) {
+  createAgent({ name, role, specialty, createdBy = null }) {
     this.ensureLoaded();
     const agent = {
       id: `agent-${crypto.randomUUID().slice(0, 8)}`,
@@ -245,6 +265,7 @@ export class NexusStore {
       role: String(role).trim(),
       specialty: String(specialty).trim(),
       status: 'idle',
+      createdBy,
       createdAt: new Date().toISOString(),
     };
     this.state.agents.push(agent);
@@ -252,10 +273,12 @@ export class NexusStore {
     return agent;
   }
 
-  // Tasks
-  listTasks({ status, agentId } = {}) {
+  // Tasks (Scoped by ownerId)
+  listTasks({ ownerId, status, agentId } = {}) {
     this.ensureLoaded();
+    if (!ownerId) return [];
     return this.state.tasks.filter(task => {
+      if (task.ownerId !== ownerId) return false;
       if (status && task.status !== status) return false;
       if (agentId && task.agentId !== agentId) return false;
       return true;
@@ -267,8 +290,11 @@ export class NexusStore {
     return this.state.tasks.find(t => t.id === id) || null;
   }
 
-  createTask({ title, description, agentId, priority = 'medium', createdBy = 'operator' }) {
+  createTask({ title, description, agentId, priority = 'medium', ownerId, createdBy = 'operator' }) {
     this.ensureLoaded();
+    if (!ownerId) {
+      throw new Error('ownerId is required to create a task');
+    }
     const now = new Date().toISOString();
     const task = {
       id: `task-${crypto.randomUUID().slice(0, 8)}`,
@@ -278,6 +304,7 @@ export class NexusStore {
       priority: ['low', 'medium', 'high'].includes(priority) ? priority : 'medium',
       status: 'pending',
       output: null,
+      ownerId,
       createdBy,
       createdAt: now,
       updatedAt: now,
@@ -317,20 +344,25 @@ export class NexusStore {
     return true;
   }
 
-  // Messages / Conversations
-  listMessages({ agentId, limit = 50 } = {}) {
+  // Messages / Conversations (Scoped by ownerId)
+  listMessages({ ownerId, agentId, limit = 50 } = {}) {
     this.ensureLoaded();
-    let list = this.state.messages;
+    if (!ownerId) return [];
+    let list = this.state.messages.filter(m => m.ownerId === ownerId);
     if (agentId) {
       list = list.filter(m => m.agentId === agentId);
     }
     return list.slice(-Math.max(1, Math.min(limit, 200)));
   }
 
-  createMessage({ agentId, sender, authorName, content, replyTo = null }) {
+  createMessage({ ownerId, agentId, sender, authorName, content, replyTo = null }) {
     this.ensureLoaded();
+    if (!ownerId) {
+      throw new Error('ownerId is required to create a message');
+    }
     const message = {
       id: `msg-${crypto.randomUUID().slice(0, 8)}`,
+      ownerId,
       agentId,
       sender,
       authorName,

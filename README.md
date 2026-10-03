@@ -1,15 +1,22 @@
 # edu — Nexus Agent Platform
 
-مستودع مشروع **edu** (منصة **Nexus Agent Platform**). تطبيق متكامل مبني بـ Express 5 وواجهة تفاعلية مع نظام مصادقة وجلسات آمنة، وطبقة تخزين بيانات مستدامة، ومسارات لإدارة الوكلاء الأذكياء والمهام والمحادثات، مع اختبارات Playwright شاملة.
+مستودع مشروع **edu** (منصة **Nexus Agent Platform**). تطبيق مبني بـ Express 5 وواجهة تفاعلية يمثل الأساس المعماري للمنصة (**Stage 4 & 4.1 Foundation**)، مع نظام مصادقة وجلسات محمية، وعزل بيانات متعدد المستخدمين، وطبقة تخزين محلية بصيغة JSON، واختبارات Playwright.
 
-## المزايا الرئيسية (المرحلة الرابعة — Stage 4)
+## المزايا والحدود المعمارية الحالية (Stage 4 & Stage 4.1 Hardening)
 
-- **طبقة البيانات والتخزين (`server/store.js`)**: تخزين مستدام بصيغة JSON ذري (`data/nexus-db.json` أو عبر المتغير `DATABASE_PATH`) مع تهيئة تلقائية للوكلاء الافتراضيين وفحص جاهزية قاعدة البيانات عبر `/api/db/status`.
-- **المصادقة وإدارة الجلسات (`server/auth.js`)**: تسجيل حسابات جديدة (`/api/auth/register`)، تسجيل الدخول (`/api/auth/login`) بتجزئة كلمات المرور عبر `crypto.scryptSync`، وجلسات موقعة عبر كوكيز `HttpOnly`، بالإضافة إلى وضع الدخول السريع التجريبي (`/api/auth/github/demo`) وتسجيل الخروج (`/api/auth/logout`).
-- **نواة وكلاء Nexus والواجهة التفاعلية (`server/agent-engine.js`, `public/`)**:
-  - استعراض وإضافة وكلاء جدد (`GET /api/agents`, `POST /api/agents`).
-  - إنشاء المهام وتصفيتها وتشغيلها عبر الوكيل المختار وحذفها (`GET /api/tasks`, `POST /api/tasks`, `POST /api/tasks/:id/run`, `DELETE /api/tasks/:id`).
-  - وحدة محادثة تفاعلية مع الوكلاء وحفظ السجل (`GET /api/chat`, `POST /api/chat`).
+- **طبقة التخزين المحلي (`server/store.js`)**:
+  - تخزين JSON ذري لعملية واحدة (`data/nexus-db.json` أو عبر `DATABASE_PATH`) مع نسخ احتياطي تلقائي (`.bak`).
+  - **حماية Fail-Closed ضد تلف البيانات**: في حال تلف ملف JSON، يرفض الخادم الكتابة فوق الملف التالف أو تصفيره بصمت، وينشئ نسخة معزولة (`.corrupt.<timestamp>.bak`) ويرمي خطأ `StoreCorruptionError`.
+  - مناسب للبيئات المحلية أو النشر أحادي العملية؛ التوسع متعدد العمليات يتطلب قاعدة بيانات خارجية في مراحل لاحقة.
+- **المصادقة وإدارة الجلسات (`server/auth.js`)**:
+  - تسجيل الحسابات (`POST /api/auth/register`) وتسجيل الدخول (`POST /api/auth/login`) بتجزئة `crypto.scryptSync` ومقارنة زمنية ثابتة `timingSafeEqual`، مع كوكيز جلسات موقعة بـ `HMAC-SHA256` (`HttpOnly`, `SameSite=Lax`).
+  - **Fail-Closed في الإنتاج**: عند ضبط `NODE_ENV=production`، يرفض الخادم التشغيل ما لم يُضبط `SESSION_SECRET` أو `JWT_SECRET` بطول لا يقل عن 32 حرفًا.
+  - **تعطيل الدخول التجريبي في الإنتاج**: المسار `POST /api/auth/github/demo` مخصص للتطوير والاختبار فقط، ويُعطّل تلقائيًا (`403 Forbidden`) في `NODE_ENV=production`. مصادقة GitHub OAuth الحقيقية غير منفذة بعد (`oauthImplemented: false`).
+- **عزل المستخدمين وصلاحيات الوصول (`Multi-User Authorization`)**:
+  - مسارات `GET /api/tasks` و`GET /api/chat` محمية بـ `requireAuth` وتعيد فقط المهام والمحادثات الخاصة بالمستخدم الحالي (`ownerId`).
+  - عمليات تعديل أو تشغيل أو حذف المهام (`PATCH / DELETE / RUN`) تتحقق من ملكية المستخدم (`task.ownerId === req.user.id`) وترد بـ `403 Forbidden` عند محاولة الوصول لمهام مستخدم آخر.
+- **محرك الوكلاء (`server/agent-engine.js`)**:
+  - يعمل حاليًا كمحرك تنسيق قياسي محلي (**Deterministic Orchestration Mock**) لمرحلة التأسيس (Stage 4)، ولا يتصل بمزود ذكاء اصطناعي خارجي (Real AI Provider Gateway مخطط في Stage 5).
 
 ## البدء
 
@@ -20,7 +27,7 @@ npm ci
 npm start
 ```
 
-افتح `http://localhost:3000`، أو اختبر حالة الخدمة على `http://localhost:3000/api/health` وحالة قاعدة البيانات على `http://localhost:3000/api/db/status`. لتغيير المنفذ، اضبط المتغير `PORT`.
+افتح `http://localhost:3000`، أو اختبر حالة الخدمة على `http://localhost:3000/api/health` وحالة التخزين على `http://localhost:3000/api/db/status`. لتغيير المنفذ، اضبط المتغير `PORT`.
 
 ## الفحوصات والاختبارات
 
@@ -30,4 +37,4 @@ npm run test:e2e:install
 npm run test:e2e
 ```
 
-تعمل الفحوصات واختبارات Chromium تلقائيًا في GitHub Actions عند فتح Pull Request أو الدفع إلى `main`. راجع [دليل إعداد GitHub](GITHUB_SETUP.md) للخطوات الاختيارية في إعدادات المستودع والنشر على Render.
+تعمل الفحوصات واختبارات Chromium تلقائيًا في workflow `Repository checks` على GitHub Actions عند فتح Pull Request أو الدفع إلى `main`. راجع [دليل إعداد GitHub](GITHUB_SETUP.md) للخطوات الاختيارية والنشر على Render.

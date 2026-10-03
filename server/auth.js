@@ -2,9 +2,33 @@ import crypto from 'node:crypto';
 
 const SESSION_COOKIE_NAME = 'nexus_session';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const DEV_ONLY_SECRET = 'nexus-dev-only-secret-not-valid-in-production-32chars';
 
-function getSigningSecret() {
-  return process.env.JWT_SECRET || process.env.SESSION_SECRET || 'nexus-local-dev-secret-change-in-production';
+export function assertProductionAuthConfig(env = process.env) {
+  if (env.NODE_ENV === 'production') {
+    const secret = String(env.SESSION_SECRET || env.JWT_SECRET || '').trim();
+    if (!secret || secret.length < 32 || secret === DEV_ONLY_SECRET || secret === 'nexus-local-dev-secret-change-in-production') {
+      throw new Error(
+        'FATAL: SESSION_SECRET or JWT_SECRET (minimum 32 characters) must be configured when NODE_ENV=production.',
+      );
+    }
+  }
+}
+
+export function getSigningSecret(env = process.env) {
+  assertProductionAuthConfig(env);
+  const configured = String(env.SESSION_SECRET || env.JWT_SECRET || '').trim();
+  if (configured) {
+    return configured;
+  }
+  return DEV_ONLY_SECRET;
+}
+
+export function isDemoAuthEnabled(env = process.env) {
+  if (env.NODE_ENV === 'production') {
+    return false;
+  }
+  return env.ENABLE_DEMO_AUTH !== 'false';
 }
 
 export function hashPassword(password, existingSalt = null) {
@@ -22,19 +46,26 @@ export function verifyPassword(password, salt, expectedHash) {
   return crypto.timingSafeEqual(actualBuf, expectedBuf);
 }
 
-function signToken(rawToken) {
-  const hmac = crypto.createHmac('sha256', getSigningSecret()).update(rawToken).digest('hex');
+export function signToken(rawToken, env = process.env) {
+  const hmac = crypto.createHmac('sha256', getSigningSecret(env)).update(rawToken).digest('hex');
   return `${rawToken}.${hmac}`;
 }
 
-function verifySignedToken(signedToken) {
+export function verifySignedToken(signedToken, env = process.env) {
   if (!signedToken || typeof signedToken !== 'string') return null;
   const parts = signedToken.split('.');
   if (parts.length !== 2) return null;
   const [rawToken, signature] = parts;
   if (!rawToken || !signature) return null;
 
-  const expectedSignature = crypto.createHmac('sha256', getSigningSecret()).update(rawToken).digest('hex');
+  let secret;
+  try {
+    secret = getSigningSecret(env);
+  } catch {
+    return null;
+  }
+
+  const expectedSignature = crypto.createHmac('sha256', secret).update(rawToken).digest('hex');
   const sigBuf = Buffer.from(signature, 'hex');
   const expectedBuf = Buffer.from(expectedSignature, 'hex');
   if (sigBuf.length !== expectedBuf.length) return null;
@@ -65,15 +96,15 @@ export function parseCookies(cookieHeader) {
   return cookies;
 }
 
-export function issueSession(res, store, userId) {
+export function issueSession(res, store, userId, env = process.env) {
   const rawToken = crypto.randomBytes(32).toString('hex');
-  const signedToken = signToken(rawToken);
+  const signedToken = signToken(rawToken, env);
   const tokenHash = hashToken(rawToken);
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
 
   store.createSession({ tokenHash, userId, expiresAt });
 
-  const isProd = process.env.NODE_ENV === 'production';
+  const isProd = env.NODE_ENV === 'production';
   const cookieParts = [
     `${SESSION_COOKIE_NAME}=${encodeURIComponent(signedToken)}`,
     'Path=/',
@@ -95,23 +126,23 @@ export function clearSessionCookie(res) {
   );
 }
 
-export function extractRawTokenFromRequest(req) {
+export function extractRawTokenFromRequest(req, env = process.env) {
   const authHeader = req.headers?.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const bearer = authHeader.slice(7).trim();
-    return verifySignedToken(bearer);
+    return verifySignedToken(bearer, env);
   }
   const cookies = parseCookies(req.headers?.cookie);
   const cookieToken = cookies[SESSION_COOKIE_NAME];
-  return verifySignedToken(cookieToken);
+  return verifySignedToken(cookieToken, env);
 }
 
-export function createSessionMiddleware(store) {
+export function createSessionMiddleware(store, env = process.env) {
   return (req, res, next) => {
     req.user = null;
     req.sessionTokenHash = null;
 
-    const rawToken = extractRawTokenFromRequest(req);
+    const rawToken = extractRawTokenFromRequest(req, env);
     if (!rawToken) return next();
 
     const tokenHash = hashToken(rawToken);

@@ -27,6 +27,7 @@ const chatInput = document.querySelector('#chat-input');
 const chatMessagesEl = document.querySelector('#chat-messages');
 
 let agentsCache = [];
+let isAuthenticated = false;
 
 function showFeedback(message, isError = false) {
   if (!authFeedbackEl) return;
@@ -70,16 +71,22 @@ async function refreshHealthAndDb() {
 async function refreshSession() {
   try {
     const data = await apiRequest('/api/auth/session');
+    if (githubDemoBtn) {
+      githubDemoBtn.classList.toggle('hidden', data.demoEnabled === false);
+    }
     if (data.authenticated && data.user) {
+      isAuthenticated = true;
       authLoggedOutEl.classList.add('hidden');
       authLoggedInEl.classList.remove('hidden');
       currentUserInfoEl.textContent = `مسجل الدخول باسم: ${data.user.displayName} (@${data.user.username}) [${data.user.provider}]`;
     } else {
+      isAuthenticated = false;
       authLoggedOutEl.classList.remove('hidden');
       authLoggedInEl.classList.add('hidden');
       currentUserInfoEl.textContent = '';
     }
   } catch {
+    isAuthenticated = false;
     authLoggedOutEl.classList.remove('hidden');
     authLoggedInEl.classList.add('hidden');
   }
@@ -146,6 +153,12 @@ async function refreshAgents() {
 
 function renderTasks(tasks) {
   tasksListEl.innerHTML = '';
+  if (!isAuthenticated) {
+    const notice = document.createElement('p');
+    notice.textContent = 'يرجى تسجيل الدخول لعرض وإدارة مهامك الخاصة.';
+    tasksListEl.append(notice);
+    return;
+  }
   if (tasks.length === 0) {
     const empty = document.createElement('p');
     empty.textContent = 'لا توجد مهام مطابقة حاليًا.';
@@ -221,6 +234,10 @@ function renderTasks(tasks) {
 }
 
 async function refreshTasks() {
+  if (!isAuthenticated) {
+    renderTasks([]);
+    return;
+  }
   const status = taskFilterStatus.value;
   const query = status ? `?status=${encodeURIComponent(status)}` : '';
   const data = await apiRequest(`/api/tasks${query}`);
@@ -229,6 +246,14 @@ async function refreshTasks() {
 
 function renderMessages(messages) {
   chatMessagesEl.innerHTML = '';
+  if (!isAuthenticated) {
+    const notice = document.createElement('p');
+    notice.style.margin = '0';
+    notice.style.color = '#475569';
+    notice.textContent = 'يرجى تسجيل الدخول لبدء المحادثة وعرض سجلك الخاص.';
+    chatMessagesEl.append(notice);
+    return;
+  }
   if (messages.length === 0) {
     const empty = document.createElement('p');
     empty.style.margin = '0';
@@ -256,6 +281,10 @@ function renderMessages(messages) {
 }
 
 async function refreshChat() {
+  if (!isAuthenticated) {
+    renderMessages([]);
+    return;
+  }
   const agentId = chatAgentSelect.value;
   const query = agentId ? `?agentId=${encodeURIComponent(agentId)}` : '';
   const data = await apiRequest(`/api/chat${query}`);
@@ -276,6 +305,8 @@ registerBtn.addEventListener('click', async () => {
     passwordInput.value = '';
     showFeedback('تم إنشاء الحساب وتسجيل الدخول بنجاح.');
     await refreshSession();
+    await refreshTasks();
+    await refreshChat();
     await refreshHealthAndDb();
   } catch (err) {
     showFeedback(err.message, true);
@@ -294,6 +325,8 @@ loginBtn.addEventListener('click', async () => {
     passwordInput.value = '';
     showFeedback('تم تسجيل الدخول بنجاح.');
     await refreshSession();
+    await refreshTasks();
+    await refreshChat();
     await refreshHealthAndDb();
   } catch (err) {
     showFeedback(err.message, true);
@@ -305,6 +338,8 @@ githubDemoBtn.addEventListener('click', async () => {
     await apiRequest('/api/auth/github/demo', { method: 'POST' });
     showFeedback('تم تفعيل جلسة مشغل GitHub التجريبية بنجاح.');
     await refreshSession();
+    await refreshTasks();
+    await refreshChat();
     await refreshHealthAndDb();
   } catch (err) {
     showFeedback(err.message, true);
@@ -316,6 +351,8 @@ logoutBtn.addEventListener('click', async () => {
     await apiRequest('/api/auth/logout', { method: 'POST' });
     showFeedback('تم تسجيل الخروج بنجاح.');
     await refreshSession();
+    await refreshTasks();
+    await refreshChat();
     await refreshHealthAndDb();
   } catch (err) {
     showFeedback(err.message, true);

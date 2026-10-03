@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import express from 'express';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
@@ -15,7 +16,8 @@ import {
   requireAuth,
   verifyPassword,
 } from './auth.js';
-import { executeAgentTask, generateAgentReply } from './agent-engine.js';
+import { ApprovalRequiredError, createAIGateway } from './ai-gateway.js';
+import { PolicyViolationError, QuotaExceededError } from './ai-policy.js';
 
 dotenv.config();
 
@@ -23,9 +25,17 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const publicDirectory = path.join(__dirname, '..', 'public');
 
-export function createApp({ storeInstance = defaultStore, env = process.env } = {}) {
+export function createApp({
+  storeInstance = defaultStore,
+  env = process.env,
+  quotaLimits = {},
+  initialGates = {},
+} = {}) {
   // Fail-closed at startup if NODE_ENV=production without a strong SESSION_SECRET/JWT_SECRET
   assertProductionAuthConfig(env);
+
+  // Fail-closed at startup if AI zero-spend policy is violated
+  const aiGateway = createAIGateway({ env, quotaLimits, initialGates });
 
   const app = express();
 
@@ -51,6 +61,42 @@ export function createApp({ storeInstance = defaultStore, env = process.env } = 
 
   app.get('/api/db/status', (req, res) => {
     res.json(storeInstance.getStatus());
+  });
+
+  // Stage 5: AI Gateway & Free-Only Policy Status
+  app.get('/api/ai/status', (req, res) => {
+    res.json(aiGateway.getStatus());
+  });
+
+  app.post('/api/ai/evaluate', requireAuth, (req, res) => {
+    try {
+      const decision = aiGateway.evaluateCandidate({
+        providerId: req.body?.providerId,
+        model: req.body?.model,
+        pricingTier: req.body?.pricingTier,
+        costUsd: req.body?.costUsd,
+        requireVerifiedGates: Boolean(req.body?.requireVerifiedGates),
+      });
+      return res.json(decision);
+    } catch (err) {
+      if (err instanceof PolicyViolationError) {
+        return res.status(err.statusCode).json({
+          allowed: false,
+          code: err.code,
+          error: err.message,
+          details: err.details,
+        });
+      }
+      return res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/ai/providers/:id/gates', requireAuth, (req, res) => {
+    const updated = aiGateway.setProviderGates(req.params.id, req.body?.gates || req.body || {});
+    if (!updated) {
+      return res.status(404).json({ error: 'Provider not found.' });
+    }
+    return res.json({ provider: updated });
   });
 
   // Authentication & Sessions
@@ -197,7 +243,7 @@ export function createApp({ storeInstance = defaultStore, env = process.env } = 
     return res.status(201).json({ agent });
   });
 
-  // Nexus Tasks API (Protected & Owner-Scoped)
+  // Nexus Tasks API (Protected, Owner-Scoped, Approval-Governed)
   app.get('/api/tasks', requireAuth, (req, res) => {
     const status = req.query.status ? String(req.query.status) : undefined;
     const agentId = req.query.agentId ? String(req.query.agentId) : undefined;
@@ -235,7 +281,8 @@ export function createApp({ storeInstance = defaultStore, env = process.env } = 
     return res.status(201).json({ task });
   });
 
-  app.post('/api/tasks/:id/run', requireAuth, (req, res) => {
+  // 1. AI Proposal & 2. Policy Decision (Advisory only, no execution)
+  app.post('/api/tasks/:id/propose', requireAuth, (req, res) => {
     const task = storeInstance.findTaskById(req.params.id);
     if (!task) {
       return res.status(404).json({ error: 'Task not found.' });
@@ -244,12 +291,90 @@ export function createApp({ storeInstance = defaultStore, env = process.env } = 
       return res.status(403).json({ error: 'Forbidden: you do not own this task.' });
     }
     const agent = storeInstance.findAgentById(task.agentId);
-    const output = executeAgentTask(agent, task);
+    try {
+      const { proposal, policyDecision } = aiGateway.proposeTask({
+        agent,
+        task,
+        providerId: req.body?.providerId,
+        model: req.body?.model,
+      });
+      const updated = storeInstance.updateTask(task.id, {
+        status: 'proposed',
+        proposal,
+        policyDecision,
+      });
+      return res.json({ task: updated, proposal, policyDecision });
+    } catch (err) {
+      if (err instanceof PolicyViolationError) {
+        return res.status(err.statusCode).json({
+          error: err.message,
+          code: err.code,
+          details: err.details,
+        });
+      }
+      return res.status(400).json({ error: err.message });
+    }
+  });
+
+  // 3. Execution Authority (Human Operator Approval Gate)
+  app.post('/api/tasks/:id/approve', requireAuth, (req, res) => {
+    const task = storeInstance.findTaskById(req.params.id);
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found.' });
+    }
+    if (task.ownerId !== req.user.id) {
+      return res.status(403).json({ error: 'Forbidden: you do not own this task.' });
+    }
+    const approval = {
+      approvalId: `appr-${crypto.randomUUID().slice(0, 8)}`,
+      approved: true,
+      approvedBy: req.user.username,
+      approvedByUserId: req.user.id,
+      approvedAt: new Date().toISOString(),
+    };
     const updated = storeInstance.updateTask(task.id, {
-      status: 'completed',
-      output,
+      status: 'approved',
+      approval,
     });
-    return res.json({ task: updated });
+    return res.json({ task: updated, approval });
+  });
+
+  // 4. Governed Execution & Evidence Proof
+  app.post('/api/tasks/:id/run', requireAuth, async (req, res) => {
+    const task = storeInstance.findTaskById(req.params.id);
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found.' });
+    }
+    if (task.ownerId !== req.user.id) {
+      return res.status(403).json({ error: 'Forbidden: you do not own this task.' });
+    }
+
+    const agent = storeInstance.findAgentById(task.agentId);
+    try {
+      const { output, policyDecision, evidence } = await aiGateway.executeApprovedTask({
+        agent,
+        task,
+        approval: task.approval,
+        providerId: req.body?.providerId,
+        model: req.body?.model,
+      });
+      const updated = storeInstance.updateTask(task.id, {
+        status: 'completed',
+        output,
+        policyDecision,
+        evidence,
+      });
+      return res.json({ task: updated, policyDecision, evidence });
+    } catch (err) {
+      if (err instanceof ApprovalRequiredError || err instanceof PolicyViolationError || err instanceof QuotaExceededError) {
+        return res.status(err.statusCode).json({
+          error: err.message,
+          code: err.code,
+          details: err.details || null,
+        });
+      }
+      return res.status(502).json({ error: err.message || 'Provider execution failed.' });
+    }
   });
 
   app.patch('/api/tasks/:id', requireAuth, (req, res) => {
@@ -276,7 +401,7 @@ export function createApp({ storeInstance = defaultStore, env = process.env } = 
     return res.json({ deleted: true, id: req.params.id });
   });
 
-  // Nexus Interactive Chat API (Protected & Owner-Scoped)
+  // Nexus Interactive Chat API (Protected, Owner-Scoped, Policy-Guarded)
   app.get('/api/chat', requireAuth, (req, res) => {
     const agentId = req.query.agentId ? String(req.query.agentId) : undefined;
     res.json({
@@ -287,7 +412,7 @@ export function createApp({ storeInstance = defaultStore, env = process.env } = 
     });
   });
 
-  app.post('/api/chat', requireAuth, (req, res) => {
+  app.post('/api/chat', requireAuth, async (req, res) => {
     const agentId = String(req.body?.agentId || '').trim();
     const content = String(req.body?.content || '').trim();
 
@@ -299,28 +424,50 @@ export function createApp({ storeInstance = defaultStore, env = process.env } = 
       return res.status(400).json({ error: 'Valid agentId is required.' });
     }
 
-    const userMessage = storeInstance.createMessage({
-      ownerId: req.user.id,
-      agentId: agent.id,
-      sender: 'user',
-      authorName: req.user.displayName || req.user.username,
-      content,
-    });
+    try {
+      const { output: replyText, policyDecision, evidence } = await aiGateway.chat({
+        agent,
+        prompt: content,
+        user: req.user,
+        providerId: req.body?.providerId,
+        model: req.body?.model,
+      });
 
-    const replyText = generateAgentReply(agent, content, req.user);
-    const agentMessage = storeInstance.createMessage({
-      ownerId: req.user.id,
-      agentId: agent.id,
-      sender: 'agent',
-      authorName: agent.name,
-      content: replyText,
-      replyTo: userMessage.id,
-    });
+      const userMessage = storeInstance.createMessage({
+        ownerId: req.user.id,
+        agentId: agent.id,
+        sender: 'user',
+        authorName: req.user.displayName || req.user.username,
+        content,
+      });
 
-    return res.status(201).json({
-      userMessage,
-      agentMessage,
-    });
+      const agentMessage = storeInstance.createMessage({
+        ownerId: req.user.id,
+        agentId: agent.id,
+        sender: 'agent',
+        authorName: agent.name,
+        content: replyText,
+        replyTo: userMessage.id,
+        policyDecision,
+        evidence,
+      });
+
+      return res.status(201).json({
+        userMessage,
+        agentMessage,
+        policyDecision,
+        evidence,
+      });
+    } catch (err) {
+      if (err instanceof PolicyViolationError || err instanceof QuotaExceededError) {
+        return res.status(err.statusCode).json({
+          error: err.message,
+          code: err.code,
+          details: err.details || null,
+        });
+      }
+      return res.status(502).json({ error: err.message || 'Chat generation failed.' });
+    }
   });
 
   return app;

@@ -303,7 +303,11 @@ export class NexusStore {
       agentId,
       priority: ['low', 'medium', 'high'].includes(priority) ? priority : 'medium',
       status: 'pending',
+      proposal: null,
+      policyDecision: null,
+      approval: null,
       output: null,
+      evidence: null,
       ownerId,
       createdBy,
       createdAt: now,
@@ -321,14 +325,26 @@ export class NexusStore {
 
     if (patch.title !== undefined) task.title = String(patch.title).trim();
     if (patch.description !== undefined) task.description = String(patch.description).trim();
-    if (patch.status && ['pending', 'in_progress', 'completed'].includes(patch.status)) {
+    if (patch.status && ['pending', 'proposed', 'approved', 'in_progress', 'completed'].includes(patch.status)) {
       task.status = patch.status;
     }
     if (patch.priority && ['low', 'medium', 'high'].includes(patch.priority)) {
       task.priority = patch.priority;
     }
+    if (patch.proposal !== undefined) {
+      task.proposal = patch.proposal;
+    }
+    if (patch.policyDecision !== undefined) {
+      task.policyDecision = patch.policyDecision;
+    }
+    if (patch.approval !== undefined) {
+      task.approval = patch.approval;
+    }
     if (patch.output !== undefined) {
       task.output = patch.output;
+    }
+    if (patch.evidence !== undefined) {
+      task.evidence = patch.evidence;
     }
     task.updatedAt = new Date().toISOString();
     this.persist();
@@ -355,7 +371,16 @@ export class NexusStore {
     return list.slice(-Math.max(1, Math.min(limit, 200)));
   }
 
-  createMessage({ ownerId, agentId, sender, authorName, content, replyTo = null }) {
+  createMessage({
+    ownerId,
+    agentId,
+    sender,
+    authorName,
+    content,
+    replyTo = null,
+    policyDecision = null,
+    evidence = null,
+  }) {
     this.ensureLoaded();
     if (!ownerId) {
       throw new Error('ownerId is required to create a message');
@@ -368,6 +393,8 @@ export class NexusStore {
       authorName,
       content: String(content).trim(),
       replyTo,
+      policyDecision,
+      evidence,
       createdAt: new Date().toISOString(),
     };
     this.state.messages.push(message);

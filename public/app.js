@@ -1,5 +1,6 @@
 const statusEl = document.querySelector('#status');
 const dbStatusEl = document.querySelector('#db-status');
+const aiStatusEl = document.querySelector('#ai-status');
 const authLoggedOutEl = document.querySelector('#auth-logged-out');
 const authLoggedInEl = document.querySelector('#auth-logged-in');
 const currentUserInfoEl = document.querySelector('#current-user-info');
@@ -65,6 +66,17 @@ async function refreshHealthAndDb() {
   } catch {
     dbStatusEl.textContent = 'Database: unavailable';
     dbStatusEl.classList.remove('ok');
+  }
+
+  if (aiStatusEl) {
+    try {
+      const ai = await apiRequest('/api/ai/status');
+      aiStatusEl.textContent = `AI Policy: ${ai.policy.AI_ACCESS_MODE} ($${ai.policy.MAX_SPEND_USD}) | Mode: ${ai.runtimeMode}`;
+      aiStatusEl.classList.add('ok');
+    } catch {
+      aiStatusEl.textContent = 'AI Policy: unavailable';
+      aiStatusEl.classList.remove('ok');
+    }
   }
 }
 
@@ -201,6 +213,22 @@ function renderTasks(tasks) {
     meta.textContent = `الوكيل: ${agentObj ? agentObj.name : task.agentId} | الأولوية: ${task.priority}`;
     card.append(meta);
 
+    if (task.proposal) {
+      const propEl = document.createElement('div');
+      propEl.className = 'task-output task-proposal';
+      propEl.textContent = `المقترح الاستشاري: ${task.proposal.summary}`;
+      card.append(propEl);
+    }
+
+    if (task.approval?.approved) {
+      const apprEl = document.createElement('p');
+      apprEl.style.margin = '0.2rem 0';
+      apprEl.style.fontSize = '0.8rem';
+      apprEl.style.color = '#15803d';
+      apprEl.textContent = `معتمد للتنفيذ بواسطة: ${task.approval.approvedBy} (${task.approval.approvalId})`;
+      card.append(apprEl);
+    }
+
     if (task.output) {
       const output = document.createElement('div');
       output.className = 'task-output';
@@ -208,10 +236,38 @@ function renderTasks(tasks) {
       card.append(output);
     }
 
+    if (task.evidence) {
+      const evEl = document.createElement('p');
+      evEl.className = 'task-evidence';
+      evEl.style.margin = '0.25rem 0 0';
+      evEl.style.fontSize = '0.75rem';
+      evEl.style.color = '#475569';
+      evEl.textContent = `الدليل (Evidence): source=${task.evidence.sourceType} | provider=${task.evidence.providerId} | tier=${task.evidence.pricingTier} | productionVerified=${task.evidence.productionVerified}`;
+      card.append(evEl);
+    }
+
     const actions = document.createElement('div');
     actions.className = 'btn-row';
 
     if (task.status !== 'completed') {
+      const proposeBtn = document.createElement('button');
+      proposeBtn.type = 'button';
+      proposeBtn.className = 'secondary';
+      proposeBtn.textContent = 'طلب مقترح';
+      proposeBtn.dataset.action = 'propose-task';
+      proposeBtn.dataset.taskId = task.id;
+      actions.append(proposeBtn);
+
+      if (!task.approval?.approved) {
+        const approveBtn = document.createElement('button');
+        approveBtn.type = 'button';
+        approveBtn.className = 'secondary';
+        approveBtn.textContent = 'اعتماد التنفيذ';
+        approveBtn.dataset.action = 'approve-task';
+        approveBtn.dataset.taskId = task.id;
+        actions.append(approveBtn);
+      }
+
       const runBtn = document.createElement('button');
       runBtn.type = 'button';
       runBtn.textContent = 'تشغيل المهمة';
@@ -410,7 +466,13 @@ tasksListEl.addEventListener('click', async event => {
   const { action, taskId } = btn.dataset;
 
   try {
-    if (action === 'run-task') {
+    if (action === 'propose-task') {
+      await apiRequest(`/api/tasks/${encodeURIComponent(taskId)}/propose`, { method: 'POST' });
+      showFeedback('تم توليد المقترح الاستشاري للمهمة.');
+    } else if (action === 'approve-task') {
+      await apiRequest(`/api/tasks/${encodeURIComponent(taskId)}/approve`, { method: 'POST' });
+      showFeedback('تم اعتماد المهمة للتنفيذ.');
+    } else if (action === 'run-task') {
       await apiRequest(`/api/tasks/${encodeURIComponent(taskId)}/run`, { method: 'POST' });
       showFeedback('تم تشغيل المهمة بواسطة الوكيل بنجاح.');
     } else if (action === 'delete-task') {

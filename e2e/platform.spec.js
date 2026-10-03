@@ -21,7 +21,7 @@ function listenAsync(app) {
   });
 }
 
-test.describe('Stage 4 & 4.1: Hardened Auth, Multi-User Isolation, Durability, and UI', () => {
+test.describe('Stage 4, 4.1 & 5: Hardened Auth, Multi-User Isolation, Durability, Free-Only AI Gateway, and UI', () => {
   test('Database status and seeded agents endpoints respond correctly', async ({ request }) => {
     const dbRes = await request.get('/api/db/status');
     expect(dbRes.ok()).toBeTruthy();
@@ -60,7 +60,7 @@ test.describe('Stage 4 & 4.1: Hardened Auth, Multi-User Isolation, Durability, a
     expect(postAgentRes.status()).toBe(401);
   });
 
-  test('Multi-user isolation: User B cannot view, run, modify, or delete User A tasks or chats', async ({ playwright, baseURL }) => {
+  test('Multi-user isolation: User B cannot view, approve, run, modify, or delete User A tasks or chats', async ({ playwright, baseURL }) => {
     const contextA = await playwright.request.newContext({ baseURL });
     const contextB = await playwright.request.newContext({ baseURL });
 
@@ -108,7 +108,10 @@ test.describe('Stage 4 & 4.1: Hardened Auth, Multi-User Isolation, Durability, a
     const { messages: chatsVisibleToB } = await listChatB.json();
     expect(chatsVisibleToB.some(m => m.content.includes(userA))).toBe(false);
 
-    // User B tries to run, patch, or delete User A's task -> 403 Forbidden
+    // User B tries to approve, run, patch, or delete User A's task -> 403 Forbidden
+    const approveByB = await contextB.post(`/api/tasks/${taskA.id}/approve`);
+    expect(approveByB.status()).toBe(403);
+
     const runByB = await contextB.post(`/api/tasks/${taskA.id}/run`);
     expect(runByB.status()).toBe(403);
 
@@ -120,7 +123,10 @@ test.describe('Stage 4 & 4.1: Hardened Auth, Multi-User Isolation, Durability, a
     const deleteByB = await contextB.delete(`/api/tasks/${taskA.id}`);
     expect(deleteByB.status()).toBe(403);
 
-    // User A can run and delete their own task
+    // User A approves, runs, and deletes their own task
+    const approveByA = await contextA.post(`/api/tasks/${taskA.id}/approve`);
+    expect(approveByA.ok()).toBeTruthy();
+
     const runByA = await contextA.post(`/api/tasks/${taskA.id}/run`);
     expect(runByA.ok()).toBeTruthy();
     const { task: completedA } = await runByA.json();
@@ -160,7 +166,7 @@ test.describe('Stage 4 & 4.1: Hardened Auth, Multi-User Isolation, Durability, a
       env: {
         NODE_ENV: 'production',
         SESSION_SECRET: 'prod-secret-with-at-least-32-bytes-of-entropy-123456',
-        ENABLE_DEMO_AUTH: 'true', // Even if someone sets ENABLE_DEMO_AUTH=true, production must block it
+        ENABLE_DEMO_AUTH: 'true',
       },
     });
 
@@ -271,13 +277,196 @@ test.describe('Stage 4 & 4.1: Hardened Auth, Multi-User Isolation, Durability, a
     }
   });
 
-  test('Full UI workflow: register, create agent, run task, chat, and logout', async ({ page }) => {
+  test('Stage 5: Free-Only Policy, 5-Gate Provider Lock, Approval Gate, and Evidence Proof', async ({ playwright }) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-stage5-'));
+    const dbPath = path.join(tmpDir, 'stage5-db.json');
+    const tempStore = new NexusStore(dbPath);
+
+    // 1. Fail-closed zero-spend policy assertions at startup
+    expect(() =>
+      createApp({ storeInstance: tempStore, env: { AI_ACCESS_MODE: 'PAID' } }),
+    ).toThrow(/AI_ACCESS_MODE must be 'FREE_ONLY'/);
+
+    expect(() =>
+      createApp({ storeInstance: tempStore, env: { MAX_SPEND_USD: '10' } }),
+    ).toThrow(/MAX_SPEND_USD must be strictly 0/);
+
+    expect(() =>
+      createApp({ storeInstance: tempStore, env: { BILLING_ALLOWED: 'true' } }),
+    ).toThrow(/BILLING_ALLOWED must be strictly false/);
+
+    // 2. Start a local test HTTP server simulating an OpenRouter free endpoint
+    const mockUpstream = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', chunk => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        const parsed = JSON.parse(body || '{}');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: `Verified Free Provider Output for model ${parsed.model}`,
+                },
+              },
+            ],
+          }),
+        );
+      });
+    });
+
+    await new Promise(resolve => mockUpstream.listen(0, '127.0.0.1', resolve));
+    const upstreamPort = mockUpstream.address().port;
+    const upstreamUrl = `http://127.0.0.1:${upstreamPort}/v1/chat/completions`;
+
+    const appInstance = createApp({
+      storeInstance: tempStore,
+      env: {
+        NODE_ENV: 'test',
+        AI_ACCESS_MODE: 'FREE_ONLY',
+        MAX_SPEND_USD: '0',
+        BILLING_ALLOWED: 'false',
+        OPENROUTER_API_KEY: 'test-free-key',
+        OPENROUTER_BASE_URL: upstreamUrl,
+        OPENROUTER_MODEL: 'meta-llama/llama-3.3-70b-instruct:free',
+      },
+      quotaLimits: { openrouter: 2 },
+    });
+
+    const srv = await listenAsync(appInstance);
+    const client = await playwright.request.newContext({ baseURL: srv.url });
+
+    try {
+      // Check AI Gateway Status: all providers start disabled until 5 gates are verified
+      const statusRes = await client.get('/api/ai/status');
+      expect(statusRes.ok()).toBeTruthy();
+      const statusData = await statusRes.json();
+      expect(statusData.policy.AI_ACCESS_MODE).toBe('FREE_ONLY');
+      expect(statusData.policy.MAX_SPEND_USD).toBe(0);
+      expect(statusData.policy.BILLING_ALLOWED).toBe(false);
+      expect(statusData.policy.tierRules).toEqual({
+        FREE_FOREVER: 'ALLOWED',
+        FREE_QUOTA: 'ALLOWED',
+        LOCAL: 'ALLOWED',
+        TRIAL: 'BLOCKED',
+        PAID: 'BLOCKED',
+        UNKNOWN: 'BLOCKED',
+      });
+
+      const openrouterInfo = statusData.providers.find(p => p.id === 'openrouter');
+      expect(openrouterInfo.configured).toBe(true);
+      expect(openrouterInfo.allGatesVerified).toBe(false);
+      expect(openrouterInfo.enabled).toBe(false);
+      expect(openrouterInfo.missingGates).toEqual(['card', 'region', 'limits', 'storage', 'quota']);
+
+      const nvidiaInfo = statusData.providers.find(p => p.id === 'nvidia');
+      expect(nvidiaInfo.pricingTier).toBe('TRIAL');
+      expect(nvidiaInfo.policyDecision).toBe('BLOCKED');
+
+      // Register operator
+      const regRes = await client.post('/api/auth/register', {
+        data: { username: 'gov_operator', password: 'Password123!' },
+      });
+      expect(regRes.status()).toBe(201);
+
+      // Evaluate blocked tiers & non-:free OpenRouter model
+      const evalPaid = await client.post('/api/ai/evaluate', {
+        data: { providerId: 'custom', pricingTier: 'PAID', model: 'gpt-4' },
+      });
+      expect(evalPaid.status()).toBe(403);
+
+      const evalTrial = await client.post('/api/ai/evaluate', {
+        data: { providerId: 'nvidia', pricingTier: 'TRIAL', model: 'llama-3' },
+      });
+      expect(evalTrial.status()).toBe(403);
+
+      const evalNonFreeModel = await client.post('/api/ai/evaluate', {
+        data: { providerId: 'openrouter', pricingTier: 'FREE_QUOTA', model: 'openai/gpt-4o' },
+      });
+      expect(evalNonFreeModel.status()).toBe(403);
+
+      // Create task and verify 4-layer separation:
+      // Layer 1: Proposal is advisory only; running without approval MUST fail with 409
+      const createTaskRes = await client.post('/api/tasks', {
+        data: {
+          title: 'Governed AI Task',
+          description: 'Test approval and 5-gate provider lock',
+          agentId: 'agent-architect',
+        },
+      });
+      const { task } = await createTaskRes.json();
+
+      // Attempt to run before approval -> 409 Conflict
+      const runUnapproved = await client.post(`/api/tasks/${task.id}/run`);
+      expect(runUnapproved.status()).toBe(409);
+
+      // Generate AI Proposal -> status becomes 'proposed', still cannot run without human approval!
+      const proposeRes = await client.post(`/api/tasks/${task.id}/propose`);
+      expect(proposeRes.ok()).toBeTruthy();
+      const { proposal } = await proposeRes.json();
+      expect(proposal.advisoryOnly).toBe(true);
+      expect(proposal.hasExecutionAuthority).toBe(false);
+
+      const runAfterProposalOnly = await client.post(`/api/tasks/${task.id}/run`);
+      expect(runAfterProposalOnly.status()).toBe(409);
+
+      // Grant Human Approval (Layer 3: Execution Authority)
+      const approveRes = await client.post(`/api/tasks/${task.id}/approve`);
+      expect(approveRes.ok()).toBeTruthy();
+      const { approval } = await approveRes.json();
+      expect(approval.approved).toBe(true);
+
+      // Attempt to run explicitly on 'openrouter' while 5 gates are NOT verified -> 403 Blocked
+      await client.post('/api/ai/providers/openrouter/gates', {
+        data: { card: true, region: true, limits: true, storage: true, quota: false },
+      });
+      const runMissingGate = await client.post(`/api/tasks/${task.id}/run`, {
+        data: { providerId: 'openrouter' },
+      });
+      expect(runMissingGate.status()).toBe(403);
+      const missingGateBody = await runMissingGate.json();
+      expect(missingGateBody.details.missingGates).toEqual(['quota']);
+
+      // Verify all 5 gates for openrouter -> provider becomes enabled
+      const gateRes = await client.post('/api/ai/providers/openrouter/gates', {
+        data: { card: true, region: true, limits: true, storage: true, quota: true },
+      });
+      const { provider: unlockedProvider } = await gateRes.json();
+      expect(unlockedProvider.enabled).toBe(true);
+
+      // Now run the approved task through the unlocked free provider -> 200 OK + Evidence Proof
+      const runApproved = await client.post(`/api/tasks/${task.id}/run`, {
+        data: { providerId: 'openrouter' },
+      });
+      expect(runApproved.ok()).toBeTruthy();
+      const { task: executedTask, evidence } = await runApproved.json();
+      expect(executedTask.status).toBe('completed');
+      expect(executedTask.output).toContain('Verified Free Provider Output');
+      expect(evidence.sourceType).toBe('live-provider-http');
+      expect(evidence.providerId).toBe('openrouter');
+      expect(evidence.pricingTier).toBe('FREE_QUOTA');
+      expect(evidence.costUsd).toBe(0);
+      expect(evidence.productionVerified).toBe(false);
+      expect(evidence.approvalId).toBe(approval.approvalId);
+    } finally {
+      await client.dispose();
+      await srv.close();
+      await new Promise(res => mockUpstream.close(res));
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('Full UI workflow: register, create agent, approve and run task, chat, and logout', async ({ page }) => {
     const uniqueUsername = `user_${Date.now()}`;
 
     await page.goto('/');
     await expect(page.getByRole('heading', { name: 'Nexus Agent Platform' })).toBeVisible();
     await expect(page.getByRole('status')).toHaveText('Service: ok');
     await expect(page.locator('#db-status')).toContainText('Database: connected');
+    await expect(page.locator('#ai-status')).toContainText('AI Policy: FREE_ONLY ($0)');
 
     // Unauthenticated state shows sign-in prompt for tasks
     await expect(page.locator('#tasks-list')).toContainText('يرجى تسجيل الدخول');
@@ -299,7 +488,7 @@ test.describe('Stage 4 & 4.1: Hardened Auth, Multi-User Isolation, Durability, a
 
     await expect(page.locator('#agents-list')).toContainText(customAgentName);
 
-    // Create and run a task
+    // Create, approve, and run a task
     const taskTitle = `مهمة اختبار ${Date.now()}`;
     await page.fill('#task-title', taskTitle);
     await page.fill('#task-desc', 'تشغيل فحص شامل للمنصة');
@@ -309,9 +498,14 @@ test.describe('Stage 4 & 4.1: Hardened Auth, Multi-User Isolation, Durability, a
     await expect(taskCard).toBeVisible();
     await expect(taskCard.locator('.tag')).toHaveText('pending');
 
+    // Approve first (Approval Gate), then Run
+    await taskCard.locator('button[data-action="approve-task"]').click();
+    await expect(taskCard.locator('.tag')).toHaveText('approved');
+
     await taskCard.locator('button[data-action="run-task"]').click();
     await expect(taskCard.locator('.tag')).toHaveText('completed');
     await expect(taskCard.locator('.task-output')).toContainText('اكتمل');
+    await expect(taskCard.locator('.task-evidence')).toContainText('productionVerified=false');
 
     // Send a chat message to an agent
     const promptText = 'ما هي خطة فحص الأمان الحالية؟';

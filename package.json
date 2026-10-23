@@ -17,6 +17,6 @@
     "helmet": "^8.3.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.44.0"
+    "@playwright/test": "^1.64.1"
   }
 }
